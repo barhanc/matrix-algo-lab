@@ -1,0 +1,224 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import random
+
+from hmatrix import *
+from collections import deque
+
+%matplotlib inline
+%config InlineBackend.figure_format = 'retina'
+plt.rcParams["figure.figsize"] = [10, 10]
+plt.style.use('default')
+
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+
+from scipy.linalg import svd
+from numpy.linalg import norm
+from time import perf_counter
+from sklearn.utils.extmath import randomized_svd
+
+
+class Node:
+    def __init__(self, rank=None, side=None, sMin=None, tMin=None, U=None, V=None, D=None):
+        self.next: list[Node] = []
+
+        self.sMin: int = sMin
+        self.tMin: int = tMin
+        self.side: int = side
+
+        self.rank: int = rank
+        self.U: np.ndarray[float] = U
+        self.D: np.ndarray[float] = D
+        self.V: np.ndarray[float] = V
+
+
+def CompressMatrix(
+    A: np.ndarray[float],
+    U: np.ndarray[float],
+    D: np.ndarray[float],
+    V: np.ndarray[float],
+    r: int,
+    sMin: int,
+    tMin: int,
+):
+    if np.allclose(A, np.zeros(A.shape)):
+        return Node(rank=0, side=A.shape[0], sMin=sMin, tMin=tMin)
+
+    return Node(
+        rank=r,
+        side=A.shape[0],
+        sMin=sMin,
+        tMin=tMin,
+        U=U[:, :r],
+        D=D[:r],
+        V=V[:r, :],
+    )
+
+
+def CreateTree(A: np.ndarray[float], r: int, eps: float, sMin: int = 0, tMin: int = 0):
+    n = A.shape[0]
+    U, D, V = randomized_svd(A, r + 1)
+    if len(D) <= r or D[r] < eps:
+        v = CompressMatrix(A, U, D, V, len(D), sMin, tMin)
+    else:
+        v = Node(rank=None, side=n, sMin=sMin, tMin=tMin)
+        v.next.append(CreateTree(A[: n // 2, : n // 2], r, eps, sMin, tMin))
+        v.next.append(CreateTree(A[n // 2 :, : n // 2], r, eps, sMin + n // 2, tMin))
+        v.next.append(CreateTree(A[: n // 2, n // 2 :], r, eps, sMin, tMin + n // 2))
+        v.next.append(CreateTree(A[n // 2 :, n // 2 :], r, eps, sMin + n // 2, tMin + n // 2))
+    return v
+
+
+def DrawTree(root: Node):
+    n = root.side
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.set_aspect("equal", "box")
+    ax.set_xlim(0, n)
+    ax.set_ylim(0, n)
+    ax.set_title(r"$n=$" + f"{n}")
+
+    def DrawTreeRecursive(root: Node):
+        nonlocal ax
+
+        if root.rank is None:  # Not a leaf -> draw grid lines
+            x, y, d = root.sMin, root.tMin, root.side // 2
+            ax.plot((x, x + 2 * d), (y + d, y + d), color="k", lw=0.6)
+            ax.plot((x + d, x + d), (y, y + 2 * d), color="k", lw=0.6)
+
+        elif root.rank > 0:  # Leaf with SVD decomposition -> fill block
+            x, y, d = (root.sMin, root.tMin + root.side, root.side)
+            lw = root.side / (6 * root.rank)
+            for i in range(root.rank):
+                ax.fill([x, x + d, x + d, x], [y, y, y - (i + 1) * lw, y - (i + 1) * lw], color="k")
+                ax.fill([x, x + (i + 1) * lw, x + (i + 1) * lw, x], [y, y, y - d, y - d], color="k")
+
+        elif root.rank == 0:  # Leaf with all 0s -> pass
+            pass
+
+        for node in root.next:
+            DrawTreeRecursive(node)
+
+    DrawTreeRecursive(root)
+    return fig
+
+
+def Decompress(root: Node):
+    n = root.side
+    A = np.zeros((n, n))
+
+    def DecompressRecursive(root: Node):
+        nonlocal A
+        if root.rank is None:  # Not a leaf -> pass
+            pass
+        elif root.rank == 0:  # Leaf with all 0s -> pass
+            pass
+        elif root.rank > 0:
+            s, t, side = root.sMin, root.tMin, root.side
+            U, D, V = root.U, np.diag(root.D), root.V
+            A[s : s + side, t : t + side] = U @ D @ V
+
+        for node in root.next:
+            DecompressRecursive(node)
+
+    DecompressRecursive(root)
+    return A
+
+As = []
+
+for w in (4, 8, 16):
+    A = np.zeros((w**3, w**3))
+    ind = lambda i, j, k: i + w * j + w**2 * k
+    for i in range(w):
+        for j in range(w):
+            for k in range(w):
+                A[ind(i, j, k), ind(i, j, k)] = random.random()
+                if i - 1 >= 0:
+                    A[ind(i, j, k), ind(i - 1, j, k)] = random.random()
+                if i + 1 < w:
+                    A[ind(i, j, k), ind(i + 1, j, k)] = random.random()
+                if j - 1 >= 0:
+                    A[ind(i, j, k), ind(i, j - 1, k)] = random.random()
+                if j + 1 < w:
+                    A[ind(i, j, k), ind(i, j + 1, k)] = random.random()
+                if k - 1 >= 0:
+                    A[ind(i, j, k), ind(i, j, k - 1)] = random.random()
+                if k + 1 < w:
+                    A[ind(i, j, k), ind(i, j, k + 1)] = random.random()
+    As.append(A)
+
+for i, A in enumerate(As):
+    plt.figure(figsize=(8, 8))
+    plt.spy(np.rot90(A))
+    plt.xticks([])
+    plt.yticks([])
+    plt.savefig(f"{i}_bp_sp.png")
+    DrawTree(CreateTree(A, r=1, eps=1e-3)).savefig(f"{i}_bp_hm.png")
+
+class Graph:
+    def __init__(self, A: np.ndarray):
+        n = A.shape[0]
+        self.adj = {u: {v for v in range(n) if A[u, v] > 0 and u != v} for u in range(n)}
+
+
+def MinimumDegree(G: Graph) -> np.ndarray:
+    n = len(G.adj)
+    order = []
+
+    for _ in range(n):
+        p = min(G.adj, key=lambda v: len(G.adj[v]))
+        order.append(p)
+        for u in G.adj[p]:
+            G.adj[u] |= G.adj[p]
+            G.adj[u] -= {p, u}
+        del G.adj[p]
+
+    return np.array(order)
+
+
+def CuthillMcKee(G: Graph) -> np.ndarray:
+    queue, order, visit = deque(), [], {v: False for v in G.adj}
+    p = min(G.adj, key=lambda x: len(G.adj[x]))
+    order.append(p)
+    visit[p] = True
+
+    for u in sorted(G.adj[p], key=lambda x: len(G.adj[x])):
+        queue.append(u)
+
+    while len(queue) > 0:
+        u = queue.popleft()
+
+        if not visit[u]:
+            order.append(u)
+            visit[u] = True
+
+            for v in sorted(G.adj[u], key=lambda x: len(G.adj[x])):
+                if not visit[v]:
+                    queue.append(v)
+
+    return np.array(order)
+
+
+def ReversedCuthillMcKee(G: Graph) -> np.ndarray:
+    return CuthillMcKee(G)[::-1]
+
+print("MINIMUM DEGREE")
+for i,A in enumerate(As):
+    order = MinimumDegree(Graph(A))
+    plt.figure(figsize=(8, 8))
+    plt.spy(np.rot90(A[order, :][:, order]))
+    plt.xticks([])
+    plt.yticks([])
+    plt.savefig(f"{i}_ap_sp_mindeg.png")
+    DrawTree(CreateTree(A[order, :][:, order], r=1, eps=1e-2)).savefig(f"{i}_ap_hm_mindeg.png")
+
+print("CUTHILL-MCKEE")
+for i, A in enumerate(As):
+    order = CuthillMcKee(Graph(A))
+    plt.figure(figsize=(8, 8))
+    plt.spy(np.rot90(A[order, :][:, order]))
+    plt.xticks([])
+    plt.yticks([])
+    plt.savefig(f"{i}_ap_sp_cutkee.png")
+    DrawTree(CreateTree(A[order, :][:, order], r=1, eps=1e-3)).savefig(f"{i}_ap_hm_cutkee.png")
